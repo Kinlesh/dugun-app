@@ -1,0 +1,9 @@
+service_account.json
+__pycache__/
+*.pyc
+.venv/
+venv/
+uploads/*
+!uploads/.gitkeep
+*.json
+dugun-app-492716-0a84f2a2a4ad.json

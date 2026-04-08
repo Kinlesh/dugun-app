@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Himmet &amp; Cennet — Yükle</title>
+<link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+<div class="wrap">
+<header class="hero hero-simple">
+<h1>Himmet &amp; Cennet</h1>
+<p class="subtitle subtitle-short">Bugün çektiğiniz fotoğraf ve videoları seçin — aynı anda birden fazla dosya yükleyebilirsiniz.</p>
+</header>
+<main>
+
+
+<section class="card upload-simple">
+<form class="upload-form" action="/upload" method="post" enctype="multipart/form-data">
+<div class="file-row">
+<input type="file" id="file" name="files" accept="image/*,video/*" multiple required />
+<label class="file-label file-label-big" for="file">📷 Dokun — bir veya birden fazla fotoğraf / video seç</label>
+</div>
+<button type="submit" class="btn btn-primary btn-block btn-send">Gönder</button>
+</form>
+</section>
+<p class="hint-link"><a href="/gallery">Paylaşılanları görüntüle →</a></p>
+</main>
+</div>
+</body>
+</html>

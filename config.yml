@@ -1,0 +1,7 @@
+tunnel: dugun
+credentials-file: C:\Users\KULLANICI\.cloudflared\XXXX.json
+
+ingress:
+  - hostname: eenginsoy.com.tr
+    service: http://localhost:8010
+  - service: http_status:404
