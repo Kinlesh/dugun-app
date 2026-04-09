@@ -10,6 +10,7 @@ import io
 import json
 import mimetypes
 import os
+import traceback
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -30,6 +31,8 @@ TEMPLATES_DIR = BASE_DIR / "templates"
 # Google Drive: paylaşılan klasör ID'si (Google Drive URL'den veya API'den)
 FOLDER_ID = "17AYafv6kTUDeIK7UBgukOohTdUhJ4UNQ"
 
+SERVICE_ACCOUNT_EMAIL = "dugun-app@dugun-app-492716.iam.gserviceaccount.com"
+
 _SCOPES = ("https://www.googleapis.com/auth/drive",)
 
 ALLOWED_IMAGE = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".heic", ".heif"}
@@ -48,7 +51,34 @@ def get_drive_service():
     raw = os.environ.get("GOOGLE_CREDS")
     if not raw:
         return None
-    info = json.loads(raw)
+    # GOOGLE_CREDS supports either JSON content or a path to a JSON file
+    try:
+        if (raw.strip().startswith("{") and raw.strip().endswith("}")) or raw.strip().startswith(
+            "{\n"
+        ):
+            info = json.loads(raw)
+        else:
+            p = Path(raw.strip().strip('"').strip("'"))
+            info = json.loads(p.read_text(encoding="utf-8"))
+    except Exception as e:
+        print("GOOGLE_CREDS ERROR:", str(e))
+        traceback.print_exc()
+        return None
+
+    # Ensure the expected service account email is the one being used
+    try:
+        client_email = (info or {}).get("client_email")
+        print("SERVICE ACCOUNT:", client_email)
+        if client_email and client_email != SERVICE_ACCOUNT_EMAIL:
+            print(
+                "SERVICE ACCOUNT WARNING: expected",
+                SERVICE_ACCOUNT_EMAIL,
+                "but got",
+                client_email,
+            )
+    except Exception:
+        pass
+
     credentials = Credentials.from_service_account_info(info, scopes=_SCOPES)
     _drive_service = build("drive", "v3", credentials=credentials, cache_discovery=False)
     return _drive_service
@@ -289,13 +319,19 @@ async def upload(files: List[UploadFile] = File(default_factory=list)):
             continue
         try:
             data = await file.read()
-        except Exception:
+        except Exception as e:
+            print("UPLOAD ERROR:", str(e))
+            traceback.print_exc()
             return RedirectResponse(url="/?error=kayit", status_code=303)
         new_name = f"{uuid.uuid4().hex}{ext}"
         try:
-            upload_to_drive(data, new_name)
+            print("UPLOAD START:", new_name)
+            file_url = upload_to_drive(data, new_name)
+            print("UPLOAD SUCCESS:", file_url)
             saved += 1
-        except Exception:
+        except Exception as e:
+            print("UPLOAD ERROR:", str(e))
+            traceback.print_exc()
             return RedirectResponse(url="/?error=kayit", status_code=303)
 
     if saved == 0:
@@ -322,7 +358,7 @@ def _item_is_video(name: str, mime: str) -> bool:
 def list_gallery_items() -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     drive = get_drive_service()
-    if drive is None or FOLDER_ID == "YOUR_GOOGLE_DRIVE_FOLDER_ID_HERE":
+    if drive is None:
         return items
     try:
         resp = (
