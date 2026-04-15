@@ -16,10 +16,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, List, Optional
 
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, Request, UploadFile
 from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
-from google.oauth2.service_account import Credentials
+from google.auth.transport.requests import Request as GoogleAuthRequest
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
@@ -27,92 +29,83 @@ BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR / "uploads"
 STATIC_DIR = BASE_DIR / "static"
 TEMPLATES_DIR = BASE_DIR / "templates"
+TOKEN_PATH = BASE_DIR / "token.json"
 
-# Google Drive: paylaşılan klasör ID'si (Google Drive URL'den veya API'den)
+# Google Drive: hedef klasör (OAuth ile giriş yapan kullanıcının Drive'ı)
 FOLDER_ID = "17AYafv6kTUDeIK7UBgukOohTdUhJ4UNQ"
 
-SERVICE_ACCOUNT_EMAIL = "dugun-app@dugun-app-492716.iam.gserviceaccount.com"
-
-_SCOPES = ("https://www.googleapis.com/auth/drive",)
+SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+REDIRECT_URI = "https://eenginsoy.com.tr/oauth2callback"
 
 ALLOWED_IMAGE = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".heic", ".heif"}
 ALLOWED_VIDEO = {".mp4", ".webm", ".mov", ".mkv", ".m4v", ".avi"}
 ALLOWED_EXT = ALLOWED_IMAGE | ALLOWED_VIDEO
 VIDEO_EXT = ALLOWED_VIDEO
 
-_drive_service = None
+
+def _oauth_flow_from_env() -> Flow | None:
+    try:
+        raw = os.environ["GOOGLE_CLIENT_SECRET"]
+    except KeyError:
+        return None
+    if not raw.strip():
+        return None
+    try:
+        client_config = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return Flow.from_client_config(
+        client_config,
+        scopes=SCOPES,
+        redirect_uri=REDIRECT_URI,
+    )
 
 
 def get_drive_service():
-    """GOOGLE_CREDS ortam değişkeninden (JSON string) servis hesabı ile Drive v3."""
-    global _drive_service
-    if _drive_service is not None:
-        return _drive_service
-    raw = os.environ.get("GOOGLE_CREDS")
-    if not raw:
+    """OAuth token.json ile Drive v3; süresi dolmuşsa yeniler."""
+    if not TOKEN_PATH.is_file():
         return None
-    # GOOGLE_CREDS supports either JSON content or a path to a JSON file
     try:
-        if (raw.strip().startswith("{") and raw.strip().endswith("}")) or raw.strip().startswith(
-            "{\n"
-        ):
-            info = json.loads(raw)
-        else:
-            p = Path(raw.strip().strip('"').strip("'"))
-            info = json.loads(p.read_text(encoding="utf-8"))
+        creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
+        if not creds.valid:
+            if creds.expired and creds.refresh_token:
+                creds.refresh(GoogleAuthRequest())
+                TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
+            else:
+                return None
+        return build("drive", "v3", credentials=creds, cache_discovery=False)
     except Exception as e:
-        print("GOOGLE_CREDS ERROR:", str(e))
+        print("get_drive_service:", str(e))
         traceback.print_exc()
         return None
-
-    # Ensure the expected service account email is the one being used
-    try:
-        client_email = (info or {}).get("client_email")
-        print("SERVICE ACCOUNT:", client_email)
-        if client_email and client_email != SERVICE_ACCOUNT_EMAIL:
-            print(
-                "SERVICE ACCOUNT WARNING: expected",
-                SERVICE_ACCOUNT_EMAIL,
-                "but got",
-                client_email,
-            )
-    except Exception:
-        pass
-
-    credentials = Credentials.from_service_account_info(info, scopes=_SCOPES)
-    _drive_service = build("drive", "v3", credentials=credentials, cache_discovery=False)
-    return _drive_service
 
 
 def upload_to_drive(file_bytes: bytes, filename: str) -> str:
     """
-    Dosyayı Google Drive'a yükler, herkese okuma izni verir.
+    Dosyayı kişisel Google Drive klasörüne yükler, herkese okuma izni verir.
     Dönüş: https://drive.google.com/uc?id=FILE_ID
     """
     drive = get_drive_service()
     if drive is None:
-        raise RuntimeError("Drive yapılandırması yok (GOOGLE_CREDS).")
+        raise RuntimeError("Önce Google ile giriş yapın (/login).")
 
     mime, _ = mimetypes.guess_type(filename)
     mime = mime or "application/octet-stream"
-    media = MediaIoBaseUpload(
-        io.BytesIO(file_bytes),
-        mimetype=mime,
-        resumable=True,
-    )
-    body = {"name": filename, "parents": [FOLDER_ID]}
-    created = (
-        drive.files()
-        .create(body=body, media_body=media, fields="id")
-        .execute()
-    )
-    fid = created["id"]
-    drive.permissions().create(
-        fileId=fid,
-        body={"type": "anyone", "role": "reader"},
+    media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype=mime, resumable=True)
+
+    file_metadata = {"name": filename, "parents": [FOLDER_ID]}
+    file = drive.files().create(
+        body=file_metadata,
+        media_body=media,
         fields="id",
     ).execute()
-    return f"https://drive.google.com/uc?id={fid}"
+
+    drive.permissions().create(
+        fileId=file["id"],
+        body={"role": "reader", "type": "anyone"},
+    ).execute()
+
+    return f"https://drive.google.com/uc?id={file['id']}"
 
 
 _EMBED_CSS = """/* Himmet & Cennet */
@@ -176,7 +169,12 @@ def html_page(content_type: str, body: str) -> Response:
     )
 
 
-def build_index_html(success: bool, error_message: Optional[str]) -> str:
+def build_index_html(
+    success: bool,
+    error_message: Optional[str],
+    logged_in: bool,
+    login_notice: bool,
+) -> str:
     alert_ok = ""
     if success:
         alert_ok = """
@@ -185,12 +183,37 @@ def build_index_html(success: bool, error_message: Optional[str]) -> str:
           Dosyalarınız alındı.
           <a class="btn btn-primary btn-block btn-send" href="/gallery">Paylaşılanlara bak</a>
         </div>"""
+    alert_login = ""
+    if login_notice:
+        alert_login = """
+        <div class="alert alert-success" role="status">
+          <strong>Google ile giriş tamamlandı.</strong> Artık dosya yükleyebilirsiniz.
+        </div>"""
     alert_err = ""
     if error_message:
         alert_err = (
             f'<div class="alert alert-error" role="alert">'
             f"{html.escape(error_message)}</div>"
         )
+    if logged_in:
+        upload_block = """
+<section class="card upload-simple">
+<form class="upload-form" action="/upload" method="post" enctype="multipart/form-data">
+<div class="file-row">
+<input type="file" id="file" name="files" accept="image/*,video/*" multiple required />
+<label class="file-label file-label-big" for="file">📷 Dokun — bir veya birden fazla fotoğraf / video seç</label>
+</div>
+<button type="submit" class="btn btn-primary btn-block btn-send">Gönder</button>
+</form>
+</section>"""
+    else:
+        upload_block = """
+<section class="card upload-simple">
+<p class="hint" style="margin-bottom:1rem;text-align:center;font-size:1rem;">
+Yüklemek için yönetici Google hesabıyla oturum açın.
+</p>
+<a class="btn btn-primary btn-block btn-send" href="/login">Google ile giriş yap</a>
+</section>"""
     return f"""<!DOCTYPE html>
 <html lang="tr">
 <head>
@@ -207,16 +230,9 @@ def build_index_html(success: bool, error_message: Optional[str]) -> str:
 </header>
 <main>
 {alert_ok}
+{alert_login}
 {alert_err}
-<section class="card upload-simple">
-<form class="upload-form" action="/upload" method="post" enctype="multipart/form-data">
-<div class="file-row">
-<input type="file" id="file" name="files" accept="image/*,video/*" multiple required />
-<label class="file-label file-label-big" for="file">📷 Dokun — bir veya birden fazla fotoğraf / video seç</label>
-</div>
-<button type="submit" class="btn btn-primary btn-block btn-send">Gönder</button>
-</form>
-</section>
+{upload_block}
 <p class="hint-link"><a href="/gallery">Paylaşılanları görüntüle →</a></p>
 </main>
 </div>
@@ -279,7 +295,7 @@ def ensure_project_layout() -> None:
         if not css.exists():
             css.write_text(_EMBED_CSS, encoding="utf-8")
         (TEMPLATES_DIR / "index.html").write_text(
-            build_index_html(False, None), encoding="utf-8"
+            build_index_html(False, None, False, False), encoding="utf-8"
         )
         (TEMPLATES_DIR / "gallery.html").write_text(
             build_gallery_html([]), encoding="utf-8"
@@ -296,19 +312,64 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 @app.get("/")
-async def index(ok: Optional[str] = None, error: Optional[str] = None):
+async def index(
+    ok: Optional[str] = None,
+    error: Optional[str] = None,
+    login: Optional[str] = None,
+):
     success = ok == "1"
+    login_notice = login == "ok"
+    logged_in = TOKEN_PATH.is_file()
     error_message: Optional[str] = None
     if error == "tip":
         error_message = "Lütfen fotoğraf veya video dosyası seçin."
     elif error == "kayit":
         error_message = "Gönderilemedi. Bir kez daha deneyin."
-    body = build_index_html(success, error_message)
+    elif error == "oauth":
+        error_message = "Google ile giriş tamamlanamadı. Tekrar deneyin."
+    elif error == "secret":
+        error_message = (
+            "OAuth yapılandırması eksik: ortam değişkeni GOOGLE_CLIENT_SECRET "
+            "(Google Cloud Web istemcisi JSON içeriği) tanımlı değil."
+        )
+    body = build_index_html(success, error_message, logged_in, login_notice)
     return html_page("text/html; charset=utf-8", body)
+
+
+@app.get("/login")
+def login():
+    flow = _oauth_flow_from_env()
+    if flow is None:
+        return RedirectResponse(url="/?error=secret", status_code=303)
+    auth_url, _ = flow.authorization_url(
+        access_type="offline",
+        prompt="consent",
+    )
+    return RedirectResponse(url=auth_url, status_code=303)
+
+
+@app.get("/oauth2callback")
+def oauth2callback(request: Request):
+    if request.query_params.get("error"):
+        return RedirectResponse(url="/?error=oauth", status_code=303)
+    flow = _oauth_flow_from_env()
+    if flow is None:
+        return RedirectResponse(url="/?error=secret", status_code=303)
+    try:
+        flow.fetch_token(authorization_response=str(request.url))
+    except Exception as e:
+        print("oauth2callback:", str(e))
+        traceback.print_exc()
+        return RedirectResponse(url="/?error=oauth", status_code=303)
+    creds = flow.credentials
+    TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
+    return {"message": "Login başarılı"}
 
 
 @app.post("/upload")
 async def upload(files: List[UploadFile] = File(default_factory=list)):
+    if get_drive_service() is None:
+        return RedirectResponse(url="/login", status_code=303)
     if not files:
         return RedirectResponse(url="/?error=tip", status_code=303)
 
