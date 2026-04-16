@@ -39,6 +39,12 @@ FOLDER_ID = "17AYafv6kTUDeIK7UBgukOohTdUhJ4UNQ"
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 REDIRECT_URI = "https://eenginsoy.com.tr/oauth2callback"
 
+
+def drive_public_media_url(file_id: str) -> str:
+    """Herkese açık Drive dosyası için doğrudan görüntüleme URL'si (galeri / embed)."""
+    return f"https://lh3.googleusercontent.com/d/{file_id}"
+
+
 ALLOWED_IMAGE = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".heic", ".heif"}
 ALLOWED_VIDEO = {".mp4", ".webm", ".mov", ".mkv", ".m4v", ".avi"}
 ALLOWED_EXT = ALLOWED_IMAGE | ALLOWED_VIDEO
@@ -91,7 +97,7 @@ def get_drive_service():
 def upload_to_drive(file_bytes: bytes, filename: str) -> str:
     """
     Dosyayı kişisel Google Drive klasörüne yükler, herkese okuma izni verir.
-    Dönüş: https://drive.google.com/uc?id=FILE_ID
+    Dönüş: https://lh3.googleusercontent.com/d/FILE_ID
     """
     drive = get_drive_service()
     if drive is None:
@@ -113,7 +119,7 @@ def upload_to_drive(file_bytes: bytes, filename: str) -> str:
         body={"role": "reader", "type": "anyone"},
     ).execute()
 
-    return f"https://drive.google.com/uc?id={file['id']}"
+    return drive_public_media_url(file["id"])
 
 
 _EMBED_CSS = """/* Himmet & Cennet */
@@ -195,7 +201,8 @@ def build_index_html(
     if login_notice:
         alert_login = """
         <div class="alert alert-success" role="status">
-          <strong>Google ile giriş tamamlandı.</strong> Artık dosya yükleyebilirsiniz.
+          <strong>Google ile giriş başarılı</strong>
+          Artık dosya yükleyebilirsiniz.
         </div>"""
     alert_err = ""
     if error_message:
@@ -405,7 +412,7 @@ def oauth2callback(request: Request):
     TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
     request.session.pop("state", None)
     request.session.pop("code_verifier", None)
-    return {"message": "Login başarılı"}
+    return RedirectResponse(url="/?login=ok", status_code=303)
 
 
 @app.post("/upload")
@@ -499,7 +506,7 @@ def list_gallery_items() -> list[dict[str, Any]]:
             items.append(
                 {
                     "name": name,
-                    "url": f"https://drive.google.com/uc?id={fid}",
+                    "url": drive_public_media_url(fid),
                     "is_video": _item_is_video(name, mime),
                     "mtime": mt,
                 }
