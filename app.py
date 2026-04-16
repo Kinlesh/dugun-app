@@ -40,15 +40,18 @@ SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 REDIRECT_URI = "https://eenginsoy.com.tr/oauth2callback"
 
 
-def drive_public_media_url(file_id: str) -> str:
-    """Herkese açık Drive dosyası için doğrudan görüntüleme URL'si (galeri / embed)."""
-    return f"https://lh3.googleusercontent.com/d/{file_id}"
+def drive_public_media_url(file_id: str, mime_type: str) -> str:
+    """Herkese açık Drive dosyası için tarayıcıda uygun URL (görüntü / video / diğer)."""
+    if mime_type.startswith("image/"):
+        return f"https://lh3.googleusercontent.com/d/{file_id}"
+    if mime_type.startswith("video/"):
+        return f"https://drive.google.com/uc?export=download&id={file_id}"
+    return f"https://drive.google.com/file/d/{file_id}/view"
 
 
 ALLOWED_IMAGE = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".heic", ".heif"}
 ALLOWED_VIDEO = {".mp4", ".webm", ".mov", ".mkv", ".m4v", ".avi"}
 ALLOWED_EXT = ALLOWED_IMAGE | ALLOWED_VIDEO
-VIDEO_EXT = ALLOWED_VIDEO
 
 
 def _load_google_client_config() -> dict | None:
@@ -94,10 +97,10 @@ def get_drive_service():
         return None
 
 
-def upload_to_drive(file_bytes: bytes, filename: str) -> str:
+def upload_to_drive(file_bytes: bytes, filename: str) -> dict[str, Any]:
     """
     Dosyayı kişisel Google Drive klasörüne yükler, herkese okuma izni verir.
-    Dönüş: https://lh3.googleusercontent.com/d/FILE_ID
+    Dönüş: url, mime_type, is_video
     """
     drive = get_drive_service()
     if drive is None:
@@ -119,7 +122,12 @@ def upload_to_drive(file_bytes: bytes, filename: str) -> str:
         body={"role": "reader", "type": "anyone"},
     ).execute()
 
-    return drive_public_media_url(file["id"])
+    fid = file["id"]
+    return {
+        "url": drive_public_media_url(fid, mime),
+        "mime_type": mime,
+        "is_video": mime.startswith("video/"),
+    }
 
 
 _EMBED_CSS = """/* Himmet & Cennet */
@@ -158,6 +166,9 @@ header.hero{text-align:center;padding:2rem 0 1.75rem}
 .gallery-item{aspect-ratio:1;border-radius:14px;overflow:hidden;background:var(--pink-soft);border:1px solid rgba(248,187,217,.4)}
 .gallery-item img,.gallery-item video{width:100%;height:100%;object-fit:cover;display:block}
 .gallery-item video{background:#000}
+.gallery-item--file{aspect-ratio:auto;min-height:80px;display:flex;align-items:center;justify-content:center;padding:0.5rem}
+.file-link{display:inline-block;padding:10px;background:#f3f3f3;border-radius:8px;text-decoration:none;color:var(--text)}
+.file-link:hover{background:#e8e8e8}
 .empty-gallery{text-align:center;padding:2.5rem 1rem;color:var(--muted)}
 .empty-gallery p{margin:0 0 1rem}
 .top-nav{margin-bottom:1rem}
@@ -266,15 +277,23 @@ def build_gallery_html(items: list[dict[str, Any]]) -> str:
         parts: list[str] = []
         for item in items:
             url = html.escape(str(item["url"]), quote=True)
-            if item.get("is_video"):
+            mime_type = html.escape(str(item.get("mime_type") or ""), quote=True)
+            if item.get("is_image"):
                 parts.append(
-                    f'<div class="gallery-item"><video controls playsinline preload="metadata" src="{url}">'
+                    f'<div class="gallery-item"><img src="{url}" alt="Fotoğraf" '
+                    f'loading="lazy" decoding="async" /></div>'
+                )
+            elif item.get("is_video"):
+                parts.append(
+                    f'<div class="gallery-item"><video controls playsinline preload="metadata" '
+                    f'style="width:100%"><source src="{url}" type="{mime_type}">'
                     f"Tarayıcınız bu videoyu oynatamıyor.</video></div>"
                 )
             else:
                 parts.append(
-                    f'<div class="gallery-item"><img src="{url}" alt="Fotoğraf" '
-                    f'loading="lazy" decoding="async" /></div>'
+                    f'<div class="gallery-item gallery-item--file">'
+                    f'<a href="{url}" target="_blank" rel="noopener noreferrer" class="file-link">'
+                    f"📄 Dosyayı görüntüle / indir</a></div>"
                 )
         main_inner = f'<div class="gallery-grid">{"".join(parts)}</div>'
     return f"""<!DOCTYPE html>
@@ -436,8 +455,8 @@ async def upload(files: List[UploadFile] = File(default_factory=list)):
         new_name = f"{uuid.uuid4().hex}{ext}"
         try:
             print("UPLOAD START:", new_name)
-            file_url = upload_to_drive(data, new_name)
-            print("UPLOAD SUCCESS:", file_url)
+            result = upload_to_drive(data, new_name)
+            print("UPLOAD SUCCESS:", result["url"])
             saved += 1
         except Exception as e:
             print("UPLOAD ERROR:", str(e))
@@ -454,15 +473,6 @@ async def gallery():
     items = list_gallery_items()
     body = build_gallery_html(items)
     return html_page("text/html; charset=utf-8", body)
-
-
-def _item_is_video(name: str, mime: str) -> bool:
-    ext = Path(name).suffix.lower()
-    if ext in VIDEO_EXT:
-        return True
-    if mime.startswith("video/"):
-        return True
-    return False
 
 
 def list_gallery_items() -> list[dict[str, Any]]:
@@ -484,18 +494,13 @@ def list_gallery_items() -> list[dict[str, Any]]:
         for f in resp.get("files", []):
             name = f.get("name") or ""
             mime = f.get("mimeType") or ""
-            ext = Path(name).suffix.lower()
-            if ext and ext not in ALLOWED_EXT:
+            if mime == "application/vnd.google-apps.folder":
                 continue
-            if not ext:
-                if not (
-                    mime.startswith("image/")
-                    or mime.startswith("video/")
-                ):
-                    continue
             fid = f.get("id")
             if not fid:
                 continue
+            is_video = mime.startswith("video/")
+            is_image = mime.startswith("image/")
             mt = 0.0
             try:
                 raw = f.get("modifiedTime")
@@ -506,8 +511,10 @@ def list_gallery_items() -> list[dict[str, Any]]:
             items.append(
                 {
                     "name": name,
-                    "url": drive_public_media_url(fid),
-                    "is_video": _item_is_video(name, mime),
+                    "url": drive_public_media_url(fid, mime),
+                    "is_video": is_video,
+                    "is_image": is_image,
+                    "mime_type": mime,
                     "mtime": mt,
                 }
             )

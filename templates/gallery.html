@@ -16,6 +16,25 @@
 <p>Bugün eklenen fotoğraf ve videolar</p>
 </header>
 <main>
+<!--
+  Canlı galeri: app.py içindeki build_gallery_html(). Örnek Jinja blok:
+  {% for item in items %}
+  <div class="gallery-item">
+    {% if item.is_image %}
+    <img src="{{ item.url }}" alt="Fotoğraf" loading="lazy" />
+    {% elif item.is_video %}
+    <video controls playsinline preload="metadata" style="width:100%">
+      <source src="{{ item.url }}" type="{{ item.mime_type }}">
+      Tarayıcınız bu videoyu oynatamıyor.
+    </video>
+    {% else %}
+    <a href="{{ item.url }}" target="_blank" class="file-link">
+      📄 Dosyayı görüntüle / indir
+    </a>
+    {% endif %}
+  </div>
+  {% endfor %}
+-->
 
         <div class="empty-gallery card">
           <p>Henüz paylaşım yok.<br />İlk siz ekleyin.</p>

@@ -286,6 +286,28 @@ header.hero {
   background: #000;
 }
 
+.gallery-item--file {
+  aspect-ratio: auto;
+  min-height: 80px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.5rem;
+}
+
+.file-link {
+  display: inline-block;
+  padding: 10px;
+  background: #f3f3f3;
+  border-radius: 8px;
+  text-decoration: none;
+  color: var(--text);
+}
+
+.file-link:hover {
+  background: #e8e8e8;
+}
+
 .empty-gallery {
   text-align: center;
   padding: 2.5rem 1rem;
