@@ -19,6 +19,8 @@ from typing import Any, List, Optional
 from fastapi import FastAPI, File, Request, UploadFile
 from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.sessions import SessionMiddleware
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
@@ -43,7 +45,7 @@ ALLOWED_EXT = ALLOWED_IMAGE | ALLOWED_VIDEO
 VIDEO_EXT = ALLOWED_VIDEO
 
 
-def _oauth_flow_from_env() -> Flow | None:
+def _load_google_client_config() -> dict | None:
     try:
         raw = os.environ["GOOGLE_CLIENT_SECRET"]
     except KeyError:
@@ -51,8 +53,14 @@ def _oauth_flow_from_env() -> Flow | None:
     if not raw.strip():
         return None
     try:
-        client_config = json.loads(raw)
+        return json.loads(raw)
     except json.JSONDecodeError:
+        return None
+
+
+def _oauth_flow_from_env() -> Flow | None:
+    client_config = _load_google_client_config()
+    if client_config is None:
         return None
     return Flow.from_client_config(
         client_config,
@@ -308,6 +316,13 @@ ensure_project_layout()
 
 app = FastAPI(title="Himmet & Cennet Düğün Albümü")
 
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=os.environ.get("SESSION_SECRET", "CHANGE_THIS_TO_RANDOM_SECRET"),
+    same_site="lax",
+)
+app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
+
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
@@ -337,24 +352,49 @@ async def index(
 
 
 @app.get("/login")
-def login():
+def login(request: Request):
     flow = _oauth_flow_from_env()
     if flow is None:
         return RedirectResponse(url="/?error=secret", status_code=303)
-    auth_url, _ = flow.authorization_url(
+    auth_url, state = flow.authorization_url(
         access_type="offline",
+        include_granted_scopes="true",
         prompt="consent",
     )
+    request.session["state"] = state
+    # PKCE: same Flow instance is not reused on callback; persist verifier with state.
+    if flow.code_verifier:
+        request.session["code_verifier"] = flow.code_verifier
     return RedirectResponse(url=auth_url, status_code=303)
 
 
 @app.get("/oauth2callback")
 def oauth2callback(request: Request):
+    print("OAUTH CALLBACK URL:", request.url)
     if request.query_params.get("error"):
         return RedirectResponse(url="/?error=oauth", status_code=303)
-    flow = _oauth_flow_from_env()
-    if flow is None:
+    saved_state = request.session.get("state")
+    code_verifier = request.session.get("code_verifier")
+    got_state = request.query_params.get("state")
+    if (
+        not saved_state
+        or not code_verifier
+        or not got_state
+        or saved_state != got_state
+    ):
+        return RedirectResponse(url="/?error=oauth", status_code=303)
+    client_config = _load_google_client_config()
+    if client_config is None:
         return RedirectResponse(url="/?error=secret", status_code=303)
+    flow = Flow.from_client_config(
+        client_config,
+        scopes=SCOPES,
+        redirect_uri=REDIRECT_URI,
+        state=saved_state,
+        code_verifier=code_verifier,
+        autogenerate_code_verifier=False,
+    )
+    flow.redirect_uri = REDIRECT_URI
     try:
         flow.fetch_token(authorization_response=str(request.url))
     except Exception as e:
@@ -363,6 +403,8 @@ def oauth2callback(request: Request):
         return RedirectResponse(url="/?error=oauth", status_code=303)
     creds = flow.credentials
     TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
+    request.session.pop("state", None)
+    request.session.pop("code_verifier", None)
     return {"message": "Login başarılı"}
 
 
