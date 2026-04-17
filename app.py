@@ -215,10 +215,11 @@ async def index(
             "olduğundan ve klasör erişiminin tanımlı olduğundan emin olun."
         )
     items = list_gallery_items()
+    # Starlette 1.x: TemplateResponse(request, name, context); request is injected into context.
     return templates.TemplateResponse(
+        request,
         "index.html",
         {
-            "request": request,
             "success": success,
             "error_message": error_message,
             "items": items,
@@ -264,8 +265,9 @@ async def upload(files: List[UploadFile] = File(default_factory=list)):
 async def gallery(request: Request):
     items = list_gallery_items()
     return templates.TemplateResponse(
+        request,
         "gallery.html",
-        {"request": request, "items": items},
+        {"items": items},
     )
 
 
