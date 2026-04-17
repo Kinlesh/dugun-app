@@ -2,11 +2,12 @@
 """
 Himmet & Cennet düğün albümü — FastAPI.
 Yüklemeler Google Drive'a gider; galeri Drive klasöründen listelenir.
-Kimlik doğrulama gerektirmez; token.json veya servis hesabı ile sunucu tarafı Drive erişimi.
+Kimlik doğrulama gerektirmez; GOOGLE_CREDS ortam değişkenindeki servis hesabı JSON ile Drive erişimi.
 """
 from __future__ import annotations
 
 import io
+import json
 import mimetypes
 import os
 import traceback
@@ -18,9 +19,7 @@ from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2 import service_account
-from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 from starlette.requests import Request
@@ -29,15 +28,9 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 TEMPLATES_DIR = BASE_DIR / "templates"
-TOKEN_PATH = BASE_DIR / "token.json"
 
 # Google Drive hedef klasör
 FOLDER_ID = "17AYafv6kTUDeIK7UBgukOohTdUhJ4UNQ"
-
-# Kullanıcı token.json (OAuth) ile uyumluluk
-SCOPES_USER = ["https://www.googleapis.com/auth/drive.file"]
-# Servis hesabı: paylaşılan klasördeki tüm dosyaları listelemek için
-SCOPES_SERVICE_ACCOUNT = ["https://www.googleapis.com/auth/drive"]
 
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
@@ -46,47 +39,22 @@ ALLOWED_VIDEO = {".mp4", ".webm", ".mov", ".mkv", ".m4v", ".avi"}
 ALLOWED_EXT = ALLOWED_IMAGE | ALLOWED_VIDEO
 
 
-def _service_account_paths() -> list[Path]:
-    paths: list[Path] = []
-    for key in ("GOOGLE_SERVICE_ACCOUNT_FILE", "GOOGLE_APPLICATION_CREDENTIALS"):
-        val = os.environ.get(key, "").strip()
-        if val:
-            paths.append(Path(val))
-    paths.append(BASE_DIR / "service_account.json")
-    paths.append(BASE_DIR / "credentials.json")
-    return paths
-
-
 def get_drive_service():
-    """
-    Drive v3: önce servis hesabı JSON, yoksa token.json (kullanıcı OAuth yenilemesi).
-    """
-    for p in _service_account_paths():
-        try:
-            if p.is_file():
-                creds = service_account.Credentials.from_service_account_file(
-                    str(p), scopes=SCOPES_SERVICE_ACCOUNT
-                )
-                return build("drive", "v3", credentials=creds, cache_discovery=False)
-        except Exception as e:
-            print("get_drive_service (service account):", str(e))
-            traceback.print_exc()
+    print("GOOGLE_CREDS LENGTH:", len(os.getenv("GOOGLE_CREDS") or ""))
+    print("FOLDER_ID:", FOLDER_ID)
 
-    if not TOKEN_PATH.is_file():
-        return None
-    try:
-        creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES_USER)
-        if not creds.valid:
-            if creds.expired and creds.refresh_token:
-                creds.refresh(GoogleAuthRequest())
-                TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
-            else:
-                return None
-        return build("drive", "v3", credentials=creds, cache_discovery=False)
-    except Exception as e:
-        print("get_drive_service (token.json):", str(e))
-        traceback.print_exc()
-        return None
+    creds_json = os.getenv("GOOGLE_CREDS")
+    if not creds_json:
+        raise Exception("GOOGLE_CREDS missing")
+
+    creds_dict = json.loads(creds_json)
+
+    creds = service_account.Credentials.from_service_account_info(
+        creds_dict,
+        scopes=["https://www.googleapis.com/auth/drive"],
+    )
+
+    return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 
 def build_drive_url(file_id: str, mime_type: str) -> str:
@@ -97,11 +65,12 @@ def build_drive_url(file_id: str, mime_type: str) -> str:
     return f"https://drive.google.com/file/d/{file_id}/view"
 
 
-def upload_to_drive(file_bytes: bytes, filename: str) -> dict[str, Any]:
+def upload_to_drive(
+    file_bytes: bytes, filename: str, drive: Any | None = None
+) -> dict[str, Any]:
     """Dosyayı FOLDER_ID altına yükler, anyone reader izni verir."""
-    drive = get_drive_service()
     if drive is None:
-        raise RuntimeError("Drive bağlantısı yok (token.json veya servis hesabı).")
+        drive = get_drive_service()
 
     mime, _ = mimetypes.guess_type(filename)
     mime = mime or "application/octet-stream"
@@ -135,8 +104,10 @@ def upload_to_drive(file_bytes: bytes, filename: str) -> dict[str, Any]:
 
 def list_gallery_items() -> list[dict[str, Any]]:
     files: list[dict[str, Any]] = []
-    drive = get_drive_service()
-    if drive is None:
+    try:
+        drive = get_drive_service()
+    except Exception as e:
+        print("list_gallery_items:", str(e))
         return files
     try:
         page_token = None
@@ -211,8 +182,8 @@ async def index(
         error_message = "Gönderilemedi. Bir kez daha deneyin."
     elif error == "drive":
         error_message = (
-            "Drive kullanılamıyor. Sunucuda token.json veya servis hesabı JSON "
-            "olduğundan ve klasör erişiminin tanımlı olduğundan emin olun."
+            "Drive kullanılamıyor. GOOGLE_CREDS ortam değişkeninde geçerli "
+            "servis hesabı JSON olduğundan ve klasör paylaşımının tanımlı olduğundan emin olun."
         )
     items = list_gallery_items()
     # Starlette 1.x: TemplateResponse(request, name, context); request is injected into context.
@@ -229,8 +200,12 @@ async def index(
 
 @app.post("/upload")
 async def upload(files: List[UploadFile] = File(default_factory=list)):
-    if get_drive_service() is None:
-        return RedirectResponse(url="/?error=drive", status_code=303)
+    try:
+        drive = get_drive_service()
+    except Exception as e:
+        print("DRIVE ERROR:", str(e))
+        traceback.print_exc()
+        raise
     if not files:
         return RedirectResponse(url="/?error=tip", status_code=303)
 
@@ -248,7 +223,7 @@ async def upload(files: List[UploadFile] = File(default_factory=list)):
         new_name = f"{uuid.uuid4().hex}{ext}"
         try:
             print("UPLOAD START:", new_name)
-            result = upload_to_drive(data, new_name)
+            result = upload_to_drive(data, new_name, drive=drive)
             print("UPLOAD SUCCESS:", result.get("url"))
             saved += 1
         except Exception as e:
