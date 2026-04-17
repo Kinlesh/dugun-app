@@ -7,24 +7,53 @@
 <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
-<div class="wrap">
+<div class="bg-slider" aria-hidden="true">
+  {% for item in items if item.is_image %}
+  <img src="{{ item.url }}" alt="" class="bg-slide" loading="lazy" decoding="async" />
+  {% endfor %}
+</div>
+<div class="wrap wrap--front">
 <header class="hero hero-simple">
 <h1>Himmet &amp; Cennet</h1>
 <p class="subtitle subtitle-short">Bugün çektiğiniz fotoğraf ve videoları seçin — aynı anda birden fazla dosya yükleyebilirsiniz.</p>
 </header>
 <main>
-
-
-
-
+{% if success %}
+<div class="alert alert-success" role="status">
+  <strong>Teşekkürler!</strong>
+  Dosyalarınız alındı.
+  <a class="btn btn-primary btn-block btn-send" href="/gallery">Paylaşılanlara bak</a>
+</div>
+{% endif %}
+{% if error_message %}
+<div class="alert alert-error" role="alert">{{ error_message }}</div>
+{% endif %}
 <section class="card upload-simple">
-<p class="hint" style="margin-bottom:1rem;text-align:center;font-size:1rem;">
-Yüklemek için yönetici Google hesabıyla oturum açın.
-</p>
-<a class="btn btn-primary btn-block btn-send" href="/login">Google ile giriş yap</a>
+<form class="upload-form" action="/upload" method="post" enctype="multipart/form-data">
+<div class="file-row">
+<input type="file" id="file" name="files" accept="image/*,video/*" multiple required />
+<label class="file-label file-label-big" for="file">📷 Dokun — bir veya birden fazla fotoğraf / video seç</label>
+</div>
+<button type="submit" class="btn btn-primary btn-block btn-send">Gönder</button>
+</form>
 </section>
 <p class="hint-link"><a href="/gallery">Paylaşılanları görüntüle →</a></p>
 </main>
 </div>
+<script>
+let slides = document.querySelectorAll('.bg-slide');
+let i = 0;
+
+if (slides.length > 0) {
+  slides[0].classList.add('active');
+}
+
+setInterval(() => {
+  if (slides.length === 0) return;
+  slides.forEach(s => s.classList.remove('active'));
+  slides[i].classList.add('active');
+  i = (i + 1) % slides.length;
+}, 3000);
+</script>
 </body>
 </html>

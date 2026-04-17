@@ -16,30 +16,34 @@
 <p>Bugün eklenen fotoğraf ve videolar</p>
 </header>
 <main>
-<!--
-  Canlı galeri: app.py içindeki build_gallery_html(). Örnek Jinja blok:
+{% if not items %}
+<div class="empty-gallery card">
+  <p>Henüz paylaşım yok.<br />İlk siz ekleyin.</p>
+  <a class="btn btn-primary btn-send btn-block" href="/">Yükleme sayfası</a>
+</div>
+{% else %}
+<div class="gallery-grid">
   {% for item in items %}
   <div class="gallery-item">
     {% if item.is_image %}
-    <img src="{{ item.url }}" alt="Fotoğraf" loading="lazy" />
+    <img src="{{ item.url }}" class="media" alt="Fotoğraf" loading="lazy" decoding="async" />
     {% elif item.is_video %}
-    <video controls playsinline preload="metadata" style="width:100%">
-      <source src="{{ item.url }}" type="{{ item.mime_type }}">
-      Tarayıcınız bu videoyu oynatamıyor.
-    </video>
+    <iframe
+      src="{{ item.url }}"
+      class="media"
+      allow="autoplay; fullscreen"
+      title="Video"
+      loading="lazy"
+    ></iframe>
     {% else %}
-    <a href="{{ item.url }}" target="_blank" class="file-link">
-      📄 Dosyayı görüntüle / indir
-    </a>
+    <div class="gallery-item--file">
+      <a href="{{ item.url }}" target="_blank" rel="noopener noreferrer" class="file-link">📄 Dosyayı görüntüle</a>
+    </div>
     {% endif %}
   </div>
   {% endfor %}
--->
-
-        <div class="empty-gallery card">
-          <p>Henüz paylaşım yok.<br />İlk siz ekleyin.</p>
-          <a class="btn btn-primary btn-send btn-block" href="/">Yükleme sayfası</a>
-        </div>
+</div>
+{% endif %}
 </main>
 </div>
 </body>
